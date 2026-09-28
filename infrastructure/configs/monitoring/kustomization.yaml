@@ -1,0 +1,31 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service-monitors.yaml
+  - prometheus-rules.yaml
+configMapGenerator:
+  - name: voize-service-health-dashboard
+    namespace: monitoring
+    files:
+      - voize-service-health.json
+  - name: voize-ml-api-dashboard
+    namespace: monitoring
+    files:
+      - voize-ml-api.json
+  - name: voize-backend-api-dashboard
+    namespace: monitoring
+    files:
+      - voize-backend-api.json
+  - name: voize-postgres-dashboard
+    namespace: monitoring
+    files:
+      - voize-postgres.json
+  - name: voize-load-generator-dashboard
+    namespace: monitoring
+    files:
+      - voize-load-generator.json
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"

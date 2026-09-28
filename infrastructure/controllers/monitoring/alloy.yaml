@@ -1,0 +1,139 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: monitoring
+spec:
+  releaseName: alloy
+  interval: 10m
+  timeout: 10m
+  dependsOn:
+    - name: prometheus-stack
+    - name: loki
+  chart:
+    spec:
+      chart: alloy
+      version: "1.13.0"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    fullnameOverride: alloy
+    global:
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
+    crds:
+      create: false
+    controller:
+      type: statefulset
+      replicas: 1
+      volumeClaimTemplates:
+        - metadata:
+            name: data
+          spec:
+            storageClassName: local-path
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 1Gi
+    alloy:
+      enableReporting: false
+      storagePath: /var/lib/alloy
+      mounts:
+        extra:
+          - name: data
+            mountPath: /var/lib/alloy
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+      configMap:
+        content: |
+          prometheus.operator.servicemonitors "applications" {
+            namespaces = ["monitoring"]
+            selector {
+              match_labels = { "collector" = "alloy" }
+            }
+            forward_to = [prometheus.remote_write.local.receiver]
+          }
+
+          prometheus.remote_write "local" {
+            endpoint {
+              url = "http://prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+            }
+          }
+
+          // No namespace or app-label filter: include every pod/container.
+          discovery.kubernetes "pods" {
+            role = "pod"
+          }
+
+          discovery.relabel "pod_logs" {
+            targets = discovery.kubernetes.pods.targets
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app"]
+              separator     = ";"
+              regex         = "([^;]+);.*|;([^;]+)"
+              replacement   = "$1$2"
+              target_label  = "app"
+            }
+          }
+
+          // The source deduplicates discovery targets by pod UID/container.
+          loki.source.kubernetes "pod_logs" {
+            targets    = discovery.relabel.pod_logs.output
+            forward_to = [loki.write.local.receiver]
+          }
+
+          loki.write "local" {
+            endpoint {
+              url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }
+    configReloader:
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+    rbac:
+      create: true
+      clusterRules:
+        - apiGroups: [""]
+          resources: [pods/log]
+          verbs: [get]
+      rules:
+        - apiGroups: [""]
+          resources: [pods, services, endpoints, namespaces]
+          verbs: [get, list, watch]
+        - apiGroups: [discovery.k8s.io]
+          resources: [endpointslices]
+          verbs: [get, list, watch]
+        - apiGroups: [monitoring.coreos.com]
+          resources: [servicemonitors]
+          verbs: [get, list, watch]
+    serviceMonitor:
+      enabled: true
+      interval: 15s
+      additionalLabels:
+        release: prometheus-stack
+        collector: prometheus

@@ -1,0 +1,130 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus-stack
+  namespace: monitoring
+spec:
+  releaseName: prometheus-stack
+  interval: 10m
+  timeout: 10m
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      version: "91.9.0"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    fullnameOverride: prometheus-stack
+    kubeControllerManager:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeEtcd:
+      enabled: false
+    kubeProxy:
+      enabled: false
+    defaultRules:
+      rules:
+        etcd: false
+        kubeControllerManager: false
+        kubeProxy: false
+        kubeSchedulerAlerting: false
+        kubeSchedulerRecording: false
+    prometheus:
+      service:
+        type: NodePort
+        nodePort: 30090
+      prometheusSpec:
+        enableRemoteWriteReceiver: true
+        scrapeInterval: 15s
+        evaluationInterval: 15s
+        retention: 24h
+        retentionSize: 4GB
+        serviceMonitorSelector:
+          matchLabels:
+            release: prometheus-stack
+          matchExpressions:
+            - key: collector
+              operator: NotIn
+              values: [alloy]
+        resources:
+          requests: {cpu: 200m, memory: 512Mi}
+          limits: {cpu: "2", memory: 2Gi}
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: local-path
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 5Gi
+    alertmanager:
+      service:
+        type: NodePort
+        nodePort: 30093
+      config:
+        global:
+          resolve_timeout: 5m
+        route:
+          receiver: local-ui
+          group_by: [alertname, namespace, service]
+          group_wait: 15s
+          group_interval: 1m
+          repeat_interval: 4h
+        receivers:
+          - name: local-ui
+      alertmanagerSpec:
+        resources:
+          requests: {cpu: 25m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 256Mi}
+    grafana:
+      adminUser: admin
+      service:
+        type: NodePort
+        nodePort: 30080
+      persistence:
+        enabled: true
+        storageClassName: local-path
+        accessModes: [ReadWriteOnce]
+        size: 1Gi
+      deploymentStrategy:
+        type: Recreate
+      resources:
+        requests: {memory: 2Gi}
+        limits: {memory: 4Gi}
+      sidecar:
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {cpu: 100m, memory: 128Mi}
+        dashboards:
+          searchNamespace: monitoring
+        datasources:
+          uid: prometheus
+      additionalDataSources:
+        - name: Loki
+          uid: loki
+          type: loki
+          access: proxy
+          url: http://loki.monitoring.svc.cluster.local:3100
+          editable: false
+    prometheusOperator:
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+    kube-state-metrics:
+      resources:
+        requests: {cpu: 25m, memory: 64Mi}
+        limits: {cpu: 200m, memory: 256Mi}
+    prometheus-node-exporter:
+      resources:
+        requests: {cpu: 25m, memory: 32Mi}
+        limits: {cpu: 200m, memory: 128Mi}

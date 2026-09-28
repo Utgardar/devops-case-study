@@ -100,12 +100,24 @@ flux bootstrap github \
   --path="clusters/devops-cs" \
   --personal
 
+# Reconcile the root first so child Kustomizations exist, then wait for
+# infrastructure and apps in dependency order on the newly created cluster.
+flux reconcile kustomization flux-system --with-source --timeout=5m
+flux reconcile kustomization infra-controllers --timeout=20m
+flux reconcile kustomization infra-configs --timeout=5m
+flux reconcile kustomization apps --timeout=10m
+
 # --- Wait for workloads ---
 echo ""
 echo "--- Waiting for workloads to be deployed ---"
-kubectl wait --for=condition=Available deployment/postgres -n postgres --timeout=180s
-kubectl wait --for=condition=Available deployment/ml-api -n ml-api --timeout=180s
-kubectl wait --for=condition=Available deployment/backend-api -n backend-api --timeout=180s
+# Flux creates namespaces/deployments asynchronously. On a fresh cluster, apps
+# may also wait for infrastructure readiness. Availability waits alone fail with
+# NotFound when the resource has not been created yet.
+for workload in postgres ml-api backend-api; do
+  kubectl wait --for=create "namespace/$workload" --timeout=20m
+  kubectl wait --for=create "deployment/$workload" -n "$workload" --timeout=5m
+  kubectl wait --for=condition=Available "deployment/$workload" -n "$workload" --timeout=180s
+done
 
 echo ""
 echo "=== Bootstrap complete! ==="
@@ -121,3 +133,8 @@ echo "Services:"
 echo "  ML API:      kubectl port-forward -n ml-api svc/ml-api 8001:8000"
 echo "  Backend API: kubectl port-forward -n backend-api svc/backend-api 8002:8000"
 echo "  PostgreSQL:  kubectl port-forward -n postgres svc/postgres 5432:5432"
+echo ""
+echo "Monitoring:"
+echo "  Grafana:      http://localhost:3000 (admin; password in Secret/prometheus-stack-grafana)"
+echo "  Prometheus:   http://localhost:9090"
+echo "  Alertmanager: http://localhost:9093"

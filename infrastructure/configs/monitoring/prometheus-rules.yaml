@@ -1,0 +1,130 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: voize-service-health
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  groups:
+    - name: voize.service-recordings
+      interval: 15s
+      rules:
+        - record: voize:http_requests:rate5m
+          expr: sum by (namespace, service) (rate({__name__=~"ml_api_requests_total|backend_api_requests_total",endpoint!~"/?(health|ready|metrics)"}[5m]))
+        - record: voize:http_requests:increase10m
+          expr: sum by (namespace, service) (increase({__name__=~"ml_api_requests_total|backend_api_requests_total",endpoint!~"/?(health|ready|metrics)"}[10m]))
+        - record: voize:http_errors:ratio10m
+          expr: |
+            (sum by (namespace, service) (increase({__name__=~"ml_api_requests_total|backend_api_requests_total",status=~"5..",endpoint!~"/?(health|ready|metrics)"}[10m]))
+            or on (namespace, service) (0 * voize:http_requests:increase10m))
+            / voize:http_requests:increase10m
+        - record: voize:http_latency:p95_10m
+          expr: histogram_quantile(0.95, sum by (namespace, service, le) (rate({__name__=~"ml_api_request_duration_seconds_bucket|backend_api_request_duration_seconds_bucket",endpoint!~"/?(health|ready|metrics)"}[10m])))
+    - name: voize.service-alerts
+      rules:
+        - alert: PostgreSQLUnavailable
+          expr: pg_up{namespace="postgres",service="postgres-exporter"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: PostgreSQL exporter cannot connect to the database
+            dashboard_url: http://localhost:3000/d/voize-postgres
+        - alert: PostgresExporterUnavailable
+          expr: sum(up{namespace="postgres",service="postgres-exporter"}) == 0 or absent(up{namespace="postgres",service="postgres-exporter"})
+          for: 2m
+          labels:
+            severity: warning
+            namespace: postgres
+            service: postgres-exporter
+          annotations:
+            summary: PostgreSQL exporter metrics are unavailable
+            dashboard_url: http://localhost:3000/d/voize-postgres
+        - alert: MLAPIMetricsUnavailable
+          expr: sum(up{namespace="ml-api",service="ml-api"}) == 0 or absent(up{namespace="ml-api",service="ml-api"})
+          for: 2m
+          labels:
+            severity: critical
+            namespace: ml-api
+            service: ml-api
+          annotations:
+            summary: ML API metrics are unavailable
+            dashboard_url: http://localhost:3000/d/voize-ml-api
+        - alert: BackendAPIMetricsUnavailable
+          expr: sum(up{namespace="backend-api",service="backend-api"}) == 0 or absent(up{namespace="backend-api",service="backend-api"})
+          for: 2m
+          labels:
+            severity: critical
+            namespace: backend-api
+            service: backend-api
+          annotations:
+            summary: Backend API metrics are unavailable
+            dashboard_url: http://localhost:3000/d/voize-backend-api
+        - alert: WorkloadReplicasUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace=~"ml-api|backend-api|postgres|load-generator"}
+            < kube_deployment_spec_replicas{namespace=~"ml-api|backend-api|postgres|load-generator"}
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Workload has fewer ready replicas than desired
+            dashboard_url: http://localhost:3000/d/voize-{{ $labels.namespace }}
+        - alert: APIHighErrorRate
+          expr: voize:http_errors:ratio10m > 0.05 and on (namespace, service) voize:http_requests:increase10m >= 10
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: API HTTP 5xx ratio exceeds 5 percent
+            dashboard_url: http://localhost:3000/d/voize-{{ $labels.namespace }}
+        - alert: APIHighLatency
+          expr: |
+            (voize:http_latency:p95_10m{service="ml-api"} > 2
+            or voize:http_latency:p95_10m{service="backend-api"} > 0.5)
+            and on (namespace, service) voize:http_requests:increase10m >= 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: API p95 latency exceeds the demonstration threshold
+            dashboard_url: http://localhost:3000/d/voize-{{ $labels.namespace }}
+        - alert: BackendDatabaseQueryErrors
+          expr: sum by (namespace, service) (increase(backend_api_db_queries_total{status=~"error|failed|failure"}[5m])) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Backend API database queries are failing
+            dashboard_url: http://localhost:3000/d/voize-backend-api
+        - alert: ApplicationMemoryPressure
+          expr: |
+            max by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~"ml-api|backend-api|postgres|load-generator",container!="",container!="POD"})
+            / on (namespace, pod, container)
+            max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=~"ml-api|backend-api|postgres|load-generator",resource="memory"}) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Application container exceeds 85 percent of its memory limit
+            dashboard_url: http://localhost:3000/d/voize-{{ $labels.namespace }}
+        - alert: ApplicationFrequentRestarts
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"ml-api|backend-api|postgres|load-generator"}[10m]) > 2
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Application container restarted more than twice in 10 minutes
+            dashboard_url: http://localhost:3000/d/voize-{{ $labels.namespace }}
+        - alert: AlloyUnavailable
+          expr: sum(up{namespace="monitoring",service="alloy"}) == 0 or absent(up{namespace="monitoring",service="alloy"})
+          for: 2m
+          labels:
+            severity: critical
+            namespace: monitoring
+            service: alloy
+          annotations:
+            summary: Alloy is unavailable
+            dashboard_url: http://localhost:3000/d/voize-service-health

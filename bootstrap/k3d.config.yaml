@@ -9,9 +9,15 @@ ports:
   - port: 8080:80
     nodeFilters:
       - loadbalancer
-  - port: 8443:443
+  - port: 127.0.0.1:3000:30080
     nodeFilters:
-      - loadbalancer
+      - server:0
+  - port: 127.0.0.1:9090:30090
+    nodeFilters:
+      - server:0
+  - port: 127.0.0.1:9093:30093
+    nodeFilters:
+      - server:0
 options:
   k3s:
     extraArgs:
